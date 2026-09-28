@@ -1,0 +1,11 @@
+# Remote state for shared/CI use. Copy to backend.tf, create the bucket once
+# (versioning on), then: terraform init -migrate-state
+terraform {
+  backend "s3" {
+    bucket       = "YOUR-tfstate-bucket"
+    key          = "tally/demo/terraform.tfstate"
+    region       = "eu-west-2"
+    encrypt      = true
+    use_lockfile = true # S3-native state locking (Terraform >= 1.10); no DynamoDB lock table needed
+  }
+}

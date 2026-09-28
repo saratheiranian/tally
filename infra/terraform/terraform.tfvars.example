@@ -1,0 +1,16 @@
+# cp terraform.tfvars.example terraform.tfvars
+region      = "eu-west-2"
+environment = "demo"
+
+# Get notified by email when an alarm fires (confirm the subscription email).
+alarm_email = "you@example.com"
+
+# Leave image_tag unset on the first apply (bootstrap: 0 tasks). CI/deploy sets it.
+# image_tag = "3f2c1ab"
+
+# Production-ish settings:
+# deletion_protection = true
+# db_multi_az         = true
+# single_nat_gateway  = false
+# acm_certificate_arn = "arn:aws:acm:eu-west-2:123456789012:certificate/..."
+# log_retention_days  = 365
