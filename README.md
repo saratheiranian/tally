@@ -1,5 +1,7 @@
 # Tally
 
+[![Backend](https://github.com/saratheiranian/tally/actions/workflows/ci.yml/badge.svg)](https://github.com/saratheiranian/tally/actions/workflows/ci.yml)
+
 **A multi-tenant, real-time event analytics platform.** Apps send events (`page_view`, `signup`, `purchase`); Tally ingests them at high volume, stores them durably, and serves live aggregates: event counts, unique users, and top events and pages over any date range.
 
 Built to explore distributed-systems problems end to end: idempotent ingestion, distributed rate limiting, back-pressure, SQL + NoSQL data modelling, and probabilistic algorithms, deployed on AWS.

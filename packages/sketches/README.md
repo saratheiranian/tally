@@ -4,7 +4,7 @@
 
 Count unique users, find the most popular items, and estimate frequencies over unbounded streams, in a fixed amount of memory. Every structure can be serialized to bytes, stored, and **merged** with others. You can sketch per shard, per worker, or per day, and combine later without double counting.
 
-Extracted from [Tally](https://github.com/YOUR_USERNAME/tally), a multi-tenant event analytics platform.
+Extracted from [Tally](https://github.com/saratheiranian/tally), a multi-tenant event analytics platform.
 
 ```bash
 pip install tally-sketches

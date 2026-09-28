@@ -9,7 +9,7 @@ description = "Mergeable, serializable HyperLogLog, Count-Min Sketch and Top-K f
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
-authors = [{ name = "Your Name", email = "you@example.com" }]
+authors = [{ name = "saratheiranian", email = "ghasemisara534@gmail.com" }]
 keywords = ["hyperloglog", "count-min-sketch", "heavy-hitters", "top-k", "probabilistic", "streaming", "cardinality"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -26,8 +26,8 @@ dev = ["pytest>=8", "ruff>=0.8"]
 bench = ["matplotlib>=3.8"]
 
 [project.urls]
-Source = "https://github.com/YOUR_USERNAME/tally/tree/main/packages/sketches"
-Issues = "https://github.com/YOUR_USERNAME/tally/issues"
+Source = "https://github.com/saratheiranian/tally/tree/main/packages/sketches"
+Issues = "https://github.com/saratheiranian/tally/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tally_sketches"]
