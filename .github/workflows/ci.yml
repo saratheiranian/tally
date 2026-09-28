@@ -10,13 +10,13 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  ingest:
+  backend:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: services/ingest
+        working-directory: services/backend
 
-    # Real databases in CI, same as local. No mocks.
+    # Real Postgres and Redis in CI, same as local. AWS is emulated in-process by moto.
     services:
       postgres:
         image: postgres:16-alpine
@@ -39,11 +39,11 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: services/ingest/requirements-dev.txt
+          cache-dependency-path: services/backend/requirements-dev.txt
       - run: pip install -r requirements-dev.txt
       - name: Lint
         run: ruff check . && ruff format --check .
       - name: Test
         run: python -m pytest -q
       - name: Build image
-        run: docker build -t tally-ingest:${{ github.sha }} .
+        run: docker build -t tally-backend:${{ github.sha }} .

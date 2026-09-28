@@ -1,4 +1,17 @@
-# Local stack: `make up`. Mirrors the AWS topology (RDS Postgres, ElastiCache Redis, ECS service).
+# Local stack: `make up`. Mirrors the AWS topology:
+#   RDS Postgres, ElastiCache Redis, SQS + DynamoDB (LocalStack), ECS services.
+
+x-backend: &backend
+  build: ./services/backend
+  environment: &backend-env
+    TALLY_DATABASE_URL: postgresql://tally:tally@postgres:5432/tally
+    TALLY_REDIS_URL: redis://redis:6379/0
+    TALLY_SINK: sqs
+    TALLY_AWS_ENDPOINT_URL: http://localstack:4566
+    TALLY_AWS_REGION: eu-west-2
+    AWS_ACCESS_KEY_ID: test
+    AWS_SECRET_ACCESS_KEY: test
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -24,15 +37,52 @@ services:
       interval: 3s
       retries: 20
 
-  ingest:
-    build: ./services/ingest
+  localstack:
+    image: localstack/localstack:3.8
     environment:
-      TALLY_DATABASE_URL: postgresql://tally:tally@postgres:5432/tally
-      TALLY_REDIS_URL: redis://redis:6379/0
+      SERVICES: sqs,dynamodb
+    ports: ["4566:4566"]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:4566/_localstack/health"]
+      interval: 3s
+      retries: 30
+
+  # One-shot: creates shard queues, DLQ + redrive policy, and the DynamoDB table.
+  aws-setup:
+    <<: *backend
+    command: ["python", "-m", "app.aws_setup"]
+    restart: "no"
+    depends_on:
+      localstack: { condition: service_healthy }
+
+  ingest:
+    <<: *backend
     ports: ["8000:8000"]
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
+      aws-setup: { condition: service_completed_successfully }
+
+  # Two workers, each owning half the shards. Tenants reach a shard via the hash ring.
+  worker-a:
+    <<: *backend
+    command: ["python", "-m", "app.worker"]
+    environment:
+      <<: *backend-env
+      TALLY_WORKER_SHARDS: "0,1"
+    stop_grace_period: 30s  # > long-poll wait, so SIGTERM drains in-flight work
+    depends_on: &worker-deps
+      postgres: { condition: service_healthy }
+      aws-setup: { condition: service_completed_successfully }
+
+  worker-b:
+    <<: *backend
+    command: ["python", "-m", "app.worker"]
+    environment:
+      <<: *backend-env
+      TALLY_WORKER_SHARDS: "2,3"
+    stop_grace_period: 30s
+    depends_on: *worker-deps
 
 volumes:
   pgdata:
