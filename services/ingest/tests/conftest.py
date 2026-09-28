@@ -1,0 +1,86 @@
+"""Integration-test fixtures. These hit a real Postgres and Redis (docker compose
+or CI service containers), because mocking a database hides exactly the bugs
+(constraint behaviour, ON CONFLICT semantics, Lua atomicity) we care about."""
+
+import asyncio
+import os
+import pathlib
+from uuid import UUID
+
+import asyncpg
+import pytest
+from fastapi.testclient import TestClient
+from redis import Redis
+
+from app.auth import generate_api_key
+from app.config import Settings
+from app.main import create_app
+
+DB_URL = os.getenv("TALLY_TEST_DATABASE_URL", "postgresql://tally:tally@localhost:5432/tally_test")
+REDIS_URL = os.getenv("TALLY_TEST_REDIS_URL", "redis://localhost:6379/15")
+MIGRATIONS = pathlib.Path(__file__).resolve().parents[3] / "db" / "migrations"
+
+
+def run(coro):
+    return asyncio.run(coro)
+
+
+async def _sql(query: str, *args):
+    conn = await asyncpg.connect(DB_URL)
+    try:
+        return await conn.fetch(query, *args)
+    finally:
+        await conn.close()
+
+
+def sql(query: str, *args):
+    """Run a query from sync test code on a dedicated connection."""
+    return run(_sql(query, *args))
+
+
+@pytest.fixture(scope="session", autouse=True)
+def schema():
+    async def rebuild():
+        conn = await asyncpg.connect(DB_URL)
+        try:
+            await conn.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
+            for f in sorted(MIGRATIONS.glob("*.sql")):
+                await conn.execute(f.read_text())
+        finally:
+            await conn.close()
+
+    run(rebuild())
+
+
+@pytest.fixture(autouse=True)
+def clean_state():
+    sql("TRUNCATE tenants, users, api_keys, events, usage_daily CASCADE")
+    Redis.from_url(REDIS_URL).flushdb()
+
+
+def make_tenant(rate: int = 1000, burst: int = 1000) -> tuple[UUID, str]:
+    tenant_id = sql(
+        "INSERT INTO tenants (name, rate_limit_per_sec, rate_limit_burst) VALUES ('Acme', $1, $2) RETURNING id",
+        rate,
+        burst,
+    )[0]["id"]
+    plaintext, prefix, digest = generate_api_key()
+    sql(
+        "INSERT INTO api_keys (tenant_id, name, key_prefix, key_hash) VALUES ($1, 'test', $2, $3)",
+        tenant_id,
+        prefix,
+        digest,
+    )
+    return tenant_id, plaintext
+
+
+@pytest.fixture
+def tenant():
+    return make_tenant()
+
+
+@pytest.fixture
+def client():
+    settings = Settings(database_url=DB_URL, redis_url=REDIS_URL, api_key_cache_ttl_sec=0)
+    with TestClient(create_app(settings)) as c:
+        yield c
