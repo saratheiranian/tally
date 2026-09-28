@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: "0 4 * * *"   # nightly chaos run
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -50,3 +53,37 @@ jobs:
       - name: Build image
         working-directory: .
         run: docker build -f services/backend/Dockerfile -t tally-backend:${{ github.sha }} .
+
+  chaos:
+    # Kill workers, the API and Postgres while events stream; fail unless every
+    # count matches ground truth exactly. ~2 minutes, so main/nightly only.
+    if: github.event_name != 'pull_request'
+    needs: backend
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: tally
+          POSTGRES_PASSWORD: tally
+          POSTGRES_DB: tally_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U tally" --health-interval 3s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e packages/sketches -r services/backend/requirements-dev.txt
+      - name: Chaos test
+        env:
+          CHAOS_PG_STOP: docker stop ${{ job.services.postgres.id }}
+          CHAOS_PG_START: docker start ${{ job.services.postgres.id }} && sleep 3
+        run: python chaos/run_chaos.py
+      - name: Publish report
+        if: always()
+        run: cat chaos/RESULTS.md >> "$GITHUB_STEP_SUMMARY"
