@@ -20,3 +20,5 @@ I use AI coding tools (Claude, Copilot) for productivity, and treat their output
 1. No AI-written code merges without a test I understand that exercises it.
 2. SQL gets checked with `EXPLAIN ANALYZE` on realistic data, not trusted by eye.
 3. Security-relevant code (auth, key handling) is reviewed line by line.
+4. Concurrency tests get **mutation-tested**: temporarily delete the lock or guard they protect and confirm they fail. A race test that passes without its lock proves nothing. (This caught a real case in Phase 3; see ADR 0004.)
+5. Benchmarks that disagree with theory get investigated with more trials before anyone trusts or "fixes" them.

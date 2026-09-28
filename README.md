@@ -4,7 +4,7 @@
 
 Built to explore distributed-systems problems end to end: idempotent ingestion, distributed rate limiting, back-pressure, SQL + NoSQL data modelling, and probabilistic algorithms, deployed on AWS.
 
-> **Status:** Phase 2 complete: async pipeline with exactly-once billing. See [Roadmap](#roadmap).
+> **Status:** Phase 3 complete: sketch-backed analytics, plus [`tally-sketches`](packages/sketches), a standalone open-source package. See [Roadmap](#roadmap).
 
 ## Architecture
 
@@ -19,11 +19,14 @@ flowchart LR
     Q2 & Q3 --> WB[Worker B]
     Q0 & Q1 & Q2 & Q3 -.->|after 5 failed<br/>deliveries| DLQ[[Dead-letter queue]]
     WA & WB -->|conditional puts| D[(DynamoDB<br/>events)]
-    WA & WB -->|idempotent ledger| PG[(PostgreSQL<br/>tenants · keys · billing)]
+    WA & WB -->|one txn: ledger + usage + sketches| PG[(PostgreSQL<br/>tenants · keys · billing · sketches)]
+    PG -->|merge daily sketches| S[GET /v1/stats]
     I1 & I2 -->|auth| PG
 ```
 
-**Request path.** The API authenticates, rate-limits, and enqueues on the tenant's shard queue, then returns `202` immediately. Workers write events to DynamoDB and record usage in Postgres. They delete the message only after both succeed.
+**Request path.** The API authenticates, rate-limits, and enqueues on the tenant's shard queue, then returns `202` immediately. Workers write events to DynamoDB, then commit billing *and* sketch updates in one Postgres transaction. They delete messages only after that commits.
+
+**Query path.** `/v1/stats` merges per-day HyperLogLog and TopK sketches, so it costs O(days), not O(events).
 
 ## Quickstart
 
@@ -32,6 +35,7 @@ make up                      # Postgres, Redis, LocalStack (SQS + DynamoDB), API
 make tenant NAME=Acme        # prints an API key (shown once)
 make demo KEY=tk_live_...    # sends sample events, handles 429s
 make logs                    # watch workers pick up and bill each batch
+make stats KEY=tk_live_...   # sketch answer vs exact answer, side by side
 curl localhost:8000/readyz   # {"postgres":"ok","redis":"ok","sqs":"ok"}
 ```
 
@@ -56,9 +60,35 @@ curl -X POST localhost:8000/v1/events \
 | `429` | Rate limited. Honour `Retry-After`, then resend the **same** batch. |
 | `503` | Queue unavailable. Resend the same batch; it's deduplicated downstream. |
 
+### Querying stats
+
+```bash
+curl "localhost:8000/v1/stats?start=2026-09-01&end=2026-09-28&limit=5" -H "Authorization: Bearer $KEY"
+```
+```json
+{"approximate": true, "events": 5000, "unique_users": 201,
+ "top_events": [{"key": "page_view", "count": 3971}, ...],
+ "top_pages":  [{"key": "/", "count": 688}, ...]}
+```
+
+Add `&exact=true` to compute the same answer by scanning DynamoDB, which is slower but lets you verify the sketches. From a local run on 5,000 events:
+
+| | Sketches | Exact scan |
+|---|---|---|
+| Events | 5,000 | 5,000 |
+| Unique users | 201 | 200 |
+| Top events / pages | identical | identical |
+| Latency | 9 ms | 1,455 ms |
+
+Ranges can span up to 366 days from sketches, or 31 days for exact scans. In `TALLY_SINK=postgres` mode, stats come from plain SQL aggregates.
+
 ## Design decisions
 
 **Exactly-once billing on an at-least-once queue** ([ADR 2](docs/decisions/0002-exactly-once-billing-over-at-least-once-delivery.md)). SQS can redeliver, and workers can crash mid-message. Each message carries a stable `batch_id`. Event writes are conditional puts (`attribute_not_exists(pk) OR batch_id = :this_batch`), so a redelivery re-claims its own events while a client's retry in a new batch is rejected as a duplicate. Billing goes through a ledger keyed on `batch_id`. A test kills the worker between the DynamoDB write and the billing write, and checks that the bill still comes out exact.
+
+**Sketches share the billing transaction** ([ADR 4](docs/decisions/0004-sketches-in-the-billing-transaction.md)). Count-Min is additive, so a redelivered message must never be absorbed twice. Sketch updates happen in the same transaction as the billing ledger, under placeholder rows plus ordered `FOR UPDATE` locks. Mutation testing showed each of the two is necessary: removing either one loses 45–90% of updates under a concurrent race.
+
+**Probabilistic algorithms, built from scratch** ([`tally-sketches`](packages/sketches)). HyperLogLog (±0.8% in 16 KiB, versus 85 MB for an exact set of 1M users), Count-Min Sketch with conservative update, and TopK heavy hitters. All are mergeable, serializable, and [benchmarked against exact answers](packages/sketches/benchmarks/RESULTS.md). Unique users across a date range come from a HyperLogLog *union*, not a sum of daily counts, which would double-count returning users.
 
 **Tenant affinity with consistent hashing** ([ADR 3](docs/decisions/0003-tenant-affinity-via-consistent-hashing.md)). Events go to one of N shard queues via a hash ring with virtual nodes, so each tenant always reaches the same worker (needed for Phase 3's in-memory sketches). Adding a shard moves ~1/N of tenants, not ~all of them; tests verify both the movement and the load balance.
 
@@ -85,16 +115,16 @@ curl -X POST localhost:8000/v1/events \
 Tests run against **real Postgres and Redis** (locally and as CI service containers) and **moto**, an in-process emulator of the real SQS and DynamoDB APIs. Mocking the database layer would hide exactly the behaviours that matter here: constraint semantics, `ON CONFLICT`, Lua atomicity, conditional writes, and redrive.
 
 ```bash
-make up testdb && make test     # 35 tests
+make up testdb && make test     # 42 backend + 23 package tests
 ```
 
-The pipeline tests cover: shard routing, end-to-end storage and billing, redelivery, a crash between the DynamoDB write and billing, client retries across batches, duplicates within a batch, poison messages reaching the DLQ without blocking the shard, splitting a large request across messages, and time-ordered scatter-gather reads.
+The stats tests check sketch answers against exact ones, cross-day unions, and a 20-way concurrent race on one sketch row (mutation-tested: it fails if either locking step is removed). The pipeline tests cover: shard routing, end-to-end storage and billing, redelivery, a crash between the DynamoDB write and billing, client retries across batches, duplicates within a batch, poison messages reaching the DLQ without blocking the shard, splitting a large request across messages, and time-ordered scatter-gather reads.
 
 ## Roadmap
 
 - [x] **Phase 1: Ingest + relational core.** Schema, API-key auth, distributed rate limiter, idempotent writes, billing usage, Docker, CI.
 - [x] **Phase 2: Async pipeline.** Sharded SQS with consistent-hash routing, DLQ + redrive, DynamoDB event store with write sharding, exactly-once billing, graceful worker shutdown.
-- [ ] **Phase 3: Algorithms.** HyperLogLog (unique users), Count-Min Sketch + heap (top-K), accuracy benchmarks vs exact counts. Extracted as a standalone open-source package.
+- [x] **Phase 3: Algorithms.** HyperLogLog, Count-Min Sketch, and TopK in the standalone [`tally-sketches`](packages/sketches) package (tests, benchmarks, CI across Python 3.10–3.13, release workflow). Integrated with exactly-once updates, plus `/v1/stats` with sketch and exact modes.
 - [ ] **Phase 4: AWS.** Terraform (VPC, ECS Fargate, RDS, ElastiCache, SQS, DynamoDB), CloudWatch dashboards and alarms.
 - [ ] **Phase 5: Proof.** k6 load tests with published numbers, failure injection (kill workers mid-batch, show zero loss), dashboard UI.
 
@@ -102,6 +132,7 @@ The pipeline tests cover: shard routing, end-to-end storage and billing, redeliv
 
 ```
 db/migrations/        SQL migrations (applied in order)
+packages/sketches/    tally-sketches: standalone, zero-dependency, publishable to PyPI
 services/backend/     One codebase, two entrypoints: API (uvicorn app.main:app) and worker (python -m app.worker)
 scripts/              Demo / load helpers
 docs/decisions/       Architecture decision records
