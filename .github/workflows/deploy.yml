@@ -1,0 +1,85 @@
+name: Deploy
+
+# Manual, auditable deploys: pick a ref, get exactly that commit in AWS.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to deploy"
+        default: main
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false   # never interrupt a deploy midway
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production   # add required reviewers in repo settings for an approval gate
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'eu-west-2' }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.10.5"
+          terraform_wrapper: false
+
+      - name: Configure remote state
+        working-directory: infra/terraform
+        run: |
+          cat > backend.tf <<EOF
+          terraform {
+            backend "s3" {
+              bucket       = "${{ vars.TF_STATE_BUCKET }}"
+              key          = "tally/demo/terraform.tfstate"
+              region       = "${{ vars.AWS_REGION || 'eu-west-2' }}"
+              encrypt      = true
+              use_lockfile = true
+            }
+          }
+          EOF
+
+      - name: Terraform init
+        working-directory: infra/terraform
+        run: terraform init -input=false
+
+      - name: Build and push image (tag = commit SHA)
+        id: image
+        run: |
+          REPO=$(terraform -chdir=infra/terraform output -raw ecr_repository_url)
+          TAG=$(git rev-parse --short=12 HEAD)
+          aws ecr get-login-password | docker login --username AWS --password-stdin "${REPO%/*}"
+          if aws ecr describe-images --repository-name "${REPO##*/}" --image-ids imageTag="$TAG" >/dev/null 2>&1; then
+            echo "image $TAG already exists (tags are immutable); skipping build"
+          else
+            docker build -f services/backend/Dockerfile -t "$REPO:$TAG" .
+            docker push "$REPO:$TAG"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Terraform apply
+        working-directory: infra/terraform
+        run: terraform apply -input=false -auto-approve -lock-timeout=120s -var image_tag=${{ steps.image.outputs.tag }}
+
+      - name: Wait for services to stabilise
+        working-directory: infra/terraform
+        run: |
+          aws ecs wait services-stable --cluster "$(terraform output -raw ecs_cluster)" \
+            --services $(terraform output -json ecs_services | jq -r '.[]')
+
+      - name: Smoke test
+        working-directory: infra/terraform
+        run: |
+          URL=$(terraform output -raw api_url)
+          curl -fsS "$URL/readyz" | tee /dev/stderr | jq -e '.postgres=="ok" and .redis=="ok" and .sqs=="ok"'
