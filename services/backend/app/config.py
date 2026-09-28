@@ -1,5 +1,7 @@
 from typing import Literal
+from urllib.parse import quote
 
+from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -10,6 +12,13 @@ class Settings(BaseSettings):
 
     # --- Postgres / Redis -----------------------------------------------------
     database_url: str = "postgresql://tally:tally@localhost:5432/tally"
+    # In AWS, ECS injects the RDS password from Secrets Manager as its own variable
+    # (it can't be templated into a URL), so the URL can also be built from parts.
+    db_host: str | None = None
+    db_port: int = 5432
+    db_name: str = "tally"
+    db_user: str = "tally"
+    db_password: SecretStr | None = None
     redis_url: str = "redis://localhost:6379/0"
     db_pool_min: int = 2
     db_pool_max: int = 10
@@ -44,6 +53,13 @@ class Settings(BaseSettings):
     sketch_hll_precision: int = 14  # 16 KiB per tenant-day, ~0.8% error on unique users
     sketch_topk_k: int = 20
     sketch_topk_epsilon: float = 0.001
+
+    @model_validator(mode="after")
+    def _assemble_database_url(self):
+        if self.db_host:
+            pw = quote(self.db_password.get_secret_value(), safe="") if self.db_password else ""
+            self.database_url = f"postgresql://{quote(self.db_user, safe='')}:{pw}@{self.db_host}:{self.db_port}/{self.db_name}"
+        return self
 
     def sketch_config(self):
         from .aggregates import SketchConfig

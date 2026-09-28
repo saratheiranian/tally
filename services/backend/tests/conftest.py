@@ -4,7 +4,6 @@ or CI service containers), because mocking a database hides exactly the bugs
 
 import asyncio
 import os
-import pathlib
 import urllib.request
 from uuid import UUID
 
@@ -18,6 +17,7 @@ from app.auth import generate_api_key
 from app.aws_setup import ensure_resources
 from app.config import Settings
 from app.main import create_app
+from app.migrate import migrate
 
 # Dummy credentials so boto3 never touches a real AWS account from tests.
 # (boto3 reads these when a client is created, so setting them here is early enough.)
@@ -26,7 +26,6 @@ for _k in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
 
 DB_URL = os.getenv("TALLY_TEST_DATABASE_URL", "postgresql://tally:tally@localhost:5432/tally_test")
 REDIS_URL = os.getenv("TALLY_TEST_REDIS_URL", "redis://localhost:6379/15")
-MIGRATIONS = pathlib.Path(__file__).resolve().parents[3] / "db" / "migrations"
 
 
 def run(coro):
@@ -52,10 +51,9 @@ def schema():
         conn = await asyncpg.connect(DB_URL)
         try:
             await conn.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
-            for f in sorted(MIGRATIONS.glob("*.sql")):
-                await conn.execute(f.read_text())
         finally:
             await conn.close()
+        await migrate(DB_URL)  # the same runner production uses
 
     run(rebuild())
 
