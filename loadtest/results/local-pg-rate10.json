@@ -1,0 +1,15 @@
+{
+  "label": "local-pg-rate10",
+  "offered_rps": 10,
+  "batch": 100,
+  "duration_s": 20,
+  "events_per_s": 1003,
+  "ingest_rps_achieved": 10,
+  "ingest_p50_ms": 6.480587,
+  "ingest_p99_ms": 17.902264,
+  "stats_p95_ms": 49.731115,
+  "error_rate": 0,
+  "rate_limited": 0,
+  "dropped_iterations": 0,
+  "thresholds_passed": true
+}
