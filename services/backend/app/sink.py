@@ -1,16 +1,20 @@
 """Where accepted events go.
 
-Phase 1 writes straight to Postgres. Phase 2 adds an SqsSink that enqueues for the
-worker fleet; the API code will not change because it depends only on EventSink.
+PostgresSink writes synchronously (simple single-node mode). SqsSink enqueues for
+the worker fleet. The API depends only on the EventSink protocol, so switching is
+config-only (TALLY_SINK).
 """
 
+import asyncio
 import json
+from datetime import UTC, datetime
 from typing import Protocol
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import asyncpg
 
-from .models import Event, IngestResult
+from .models import Event, IngestResult, QueueMessage
+from .queueing import chunk_events, pack_bodies
 
 
 class EventSink(Protocol):
@@ -57,3 +61,40 @@ class PostgresSink:
             [e.occurred_at for e in events],
         )
         return IngestResult(accepted=inserted, duplicates=len(events) - inserted)
+
+
+class SinkUnavailable(RuntimeError):
+    """The queue rejected part of a request. The client should retry the whole
+    batch; that is safe because workers dedupe by event_id."""
+
+
+class SqsSink:
+    """Enqueues events on the tenant's shard queue and returns immediately.
+
+    Because the ring always maps a tenant to the same queue, one worker sees all
+    of a tenant's events, which Phase 3's per-tenant sketches rely on.
+    """
+
+    def __init__(self, sqs, queue_urls: dict[str, str], ring) -> None:
+        self._sqs = sqs
+        self._urls = queue_urls
+        self._ring = ring
+
+    def queue_for(self, tenant_id: UUID) -> str:
+        return self._ring.get(str(tenant_id))
+
+    async def write(self, tenant_id: UUID, events: list[Event]) -> IngestResult:
+        url = self._urls[self.queue_for(tenant_id)]
+        received_at = datetime.now(UTC)
+        bodies = [
+            QueueMessage(
+                batch_id=uuid4(), tenant_id=tenant_id, received_at=received_at, events=chunk
+            ).model_dump_json()
+            for chunk in chunk_events(events)
+        ]
+        for group in pack_bodies(bodies):
+            entries = [{"Id": str(i), "MessageBody": body} for i, body in enumerate(group)]
+            resp = await asyncio.to_thread(self._sqs.send_message_batch, QueueUrl=url, Entries=entries)
+            if resp.get("Failed"):
+                raise SinkUnavailable(f"{len(resp['Failed'])} message(s) rejected by SQS")
+        return IngestResult(accepted=len(events), duplicates=None)

@@ -1,3 +1,4 @@
+import asyncio
 import math
 from contextlib import asynccontextmanager
 from typing import Annotated
@@ -6,12 +7,15 @@ import asyncpg
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
 from redis.asyncio import Redis
 
+from . import aws
 from .auth import ApiKeyAuthenticator, Tenant
 from .config import Settings
 from .config import settings as default_settings
+from .hashring import ConsistentHashRing
 from .models import EventBatch, IngestResult
+from .queueing import EventTooLarge
 from .ratelimit import TokenBucketLimiter
-from .sink import PostgresSink
+from .sink import PostgresSink, SinkUnavailable, SqsSink
 
 
 def create_app(settings: Settings = default_settings) -> FastAPI:
@@ -25,7 +29,13 @@ def create_app(settings: Settings = default_settings) -> FastAPI:
         app.state.redis = redis
         app.state.auth = ApiKeyAuthenticator(pool, ttl=settings.api_key_cache_ttl_sec)
         app.state.limiter = TokenBucketLimiter(redis)
-        app.state.sink = PostgresSink(pool)
+        if settings.sink == "sqs":
+            sqs = aws.client("sqs", settings)
+            urls = {n: sqs.get_queue_url(QueueName=n)["QueueUrl"] for n in settings.queue_names()}
+            app.state.sqs = sqs
+            app.state.sink = SqsSink(sqs, urls, ConsistentHashRing(urls))
+        else:
+            app.state.sink = PostgresSink(pool)
         try:
             yield
         finally:
@@ -77,7 +87,15 @@ def create_app(settings: Settings = default_settings) -> FastAPI:
                 headers={"Retry-After": str(math.ceil(decision.retry_after_ms / 1000))},
             )
         response.headers["X-RateLimit-Remaining"] = str(int(decision.remaining))
-        return await request.app.state.sink.write(tenant.id, batch.events)
+        try:
+            return await request.app.state.sink.write(tenant.id, batch.events)
+        except EventTooLarge as exc:
+            raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, str(exc)) from exc
+        except SinkUnavailable as exc:
+            # Safe for the client to resend the whole batch: workers dedupe by event_id.
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE, str(exc), headers={"Retry-After": "1"}
+            ) from exc
 
     @app.get("/healthz")
     async def healthz() -> dict:
@@ -98,6 +116,12 @@ def create_app(settings: Settings = default_settings) -> FastAPI:
             checks["redis"] = "ok"
         except Exception as exc:  # noqa: BLE001
             checks["redis"] = f"error: {exc.__class__.__name__}"
+        if settings.sink == "sqs":
+            try:
+                await asyncio.to_thread(request.app.state.sqs.list_queues, MaxResults=1)
+                checks["sqs"] = "ok"
+            except Exception as exc:  # noqa: BLE001
+                checks["sqs"] = f"error: {exc.__class__.__name__}"
         if any(v != "ok" for v in checks.values()):
             response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         return checks

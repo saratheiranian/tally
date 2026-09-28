@@ -25,4 +25,20 @@ class EventBatch(BaseModel):
 
 class IngestResult(BaseModel):
     accepted: int
-    duplicates: int
+    # Known immediately in postgres mode. In sqs mode dedupe happens later in the
+    # worker, so this is null and `accepted` means "durably enqueued".
+    duplicates: int | None
+
+
+class QueueMessage(BaseModel):
+    """The envelope the ingest tier puts on SQS and workers consume.
+
+    batch_id is generated once per message and survives redelivery unchanged,
+    which is what lets workers make processing exactly-once in effect.
+    received_at is the ingest server's clock, so billing day is deterministic.
+    """
+
+    batch_id: UUID
+    tenant_id: UUID
+    received_at: datetime
+    events: list[Event]
