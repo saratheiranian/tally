@@ -1,4 +1,4 @@
-name: CI
+name: Backend
 
 on:
   push:
@@ -39,11 +39,14 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: services/backend/requirements-dev.txt
-      - run: pip install -r requirements-dev.txt
+          cache-dependency-path: |
+            services/backend/requirements-dev.txt
+            packages/sketches/pyproject.toml
+      - run: pip install -e ../../packages/sketches -r requirements-dev.txt
       - name: Lint
         run: ruff check . && ruff format --check .
       - name: Test
         run: python -m pytest -q
       - name: Build image
-        run: docker build -t tally-backend:${{ github.sha }} .
+        working-directory: .
+        run: docker build -f services/backend/Dockerfile -t tally-backend:${{ github.sha }} .
