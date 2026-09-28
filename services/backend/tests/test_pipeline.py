@@ -69,6 +69,13 @@ def usage(tenant_id) -> int:
     return rows[0][0]
 
 
+def sketch_event_total(tenant_id) -> int:
+    from tally_sketches import TopK
+
+    rows = sql("SELECT data FROM sketches WHERE tenant_id = $1 AND kind = 'events'", tenant_id)
+    return sum(TopK.from_bytes(r["data"]).total for r in rows)
+
+
 def queue_depths(settings) -> dict[str, int]:
     sqs = aws.client("sqs", settings)
     out = {}
@@ -121,6 +128,7 @@ def test_redelivered_message_is_billed_once(aws_settings):
     assert process(aws_settings, body) == 3
     assert process(aws_settings, body) == 3  # same batch re-owns its own events...
     assert usage(tenant_id) == 3  # ...but the ledger applies usage only once
+    assert sketch_event_total(tenant_id) == 3  # and the sketches, which are additive, only once
     assert len(stored(aws_settings, tenant_id)) == 3
 
 
@@ -131,19 +139,20 @@ def test_crash_after_dynamo_before_billing_recovers_exactly(aws_settings, monkey
     tenant_id, _ = make_tenant()
     body = message(tenant_id, [event() for _ in range(4)])
 
-    real = worker_mod.record_usage
+    real = worker_mod.commit_batches
 
     async def crash(*a, **kw):
         raise ConnectionError("simulated crash before billing")
 
-    monkeypatch.setattr(worker_mod, "record_usage", crash)
+    monkeypatch.setattr(worker_mod, "commit_batches", crash)
     with pytest.raises(ConnectionError):
         process(aws_settings, body)
     assert len(stored(aws_settings, tenant_id)) == 4 and usage(tenant_id) == 0
 
-    monkeypatch.setattr(worker_mod, "record_usage", real)
+    monkeypatch.setattr(worker_mod, "commit_batches", real)
     process(aws_settings, body)  # the redelivery
     assert usage(tenant_id) == 4
+    assert sketch_event_total(tenant_id) == 4  # sketches recovered too
 
 
 def test_client_retry_in_a_new_batch_is_not_billed_twice(aws_settings):

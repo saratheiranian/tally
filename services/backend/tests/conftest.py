@@ -62,7 +62,7 @@ def schema():
 
 @pytest.fixture(autouse=True)
 def clean_state():
-    sql("TRUNCATE tenants, users, api_keys, events, usage_daily, usage_ledger CASCADE")
+    sql("TRUNCATE tenants, users, api_keys, events, usage_daily, usage_ledger, sketches CASCADE")
     Redis.from_url(REDIS_URL).flushdb()
 
 
