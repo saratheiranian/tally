@@ -9,6 +9,8 @@ COPY services/backend/requirements.txt .
 RUN pip install --no-cache-dir /tmp/sketches -r requirements.txt && rm -rf /tmp/sketches
 
 COPY services/backend/app ./app
+COPY db/migrations ./db/migrations
+ENV TALLY_MIGRATIONS_DIR=/srv/db/migrations
 
 # Run as non-root.
 RUN useradd --create-home --uid 10001 tally

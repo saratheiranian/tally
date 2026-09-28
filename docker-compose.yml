@@ -24,8 +24,6 @@ services:
     ports: ["5432:5432"]
     volumes:
       - pgdata:/var/lib/postgresql/data
-      # Applied automatically on first start (empty volume). `make reset` to re-run.
-      - ./db/migrations:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U tally"]
       interval: 3s
@@ -49,9 +47,19 @@ services:
       interval: 3s
       retries: 30
 
+  # One-shot: applies db/migrations with the same runner production uses (app.migrate).
+  migrate:
+    <<: *backend
+    healthcheck: { disable: true }  # image HEALTHCHECK probes the API port
+    command: ["python", "-m", "app.migrate"]
+    restart: "no"
+    depends_on:
+      postgres: { condition: service_healthy }
+
   # One-shot: creates shard queues, DLQ + redrive policy, and the DynamoDB table.
   aws-setup:
     <<: *backend
+    healthcheck: { disable: true }  # image HEALTHCHECK probes the API port
     command: ["python", "-m", "app.aws_setup"]
     restart: "no"
     depends_on:
@@ -61,24 +69,26 @@ services:
     <<: *backend
     ports: ["8000:8000"]
     depends_on:
-      postgres: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
       redis: { condition: service_healthy }
       aws-setup: { condition: service_completed_successfully }
 
   # Two workers, each owning half the shards. Tenants reach a shard via the hash ring.
   worker-a:
     <<: *backend
+    healthcheck: { disable: true }  # image HEALTHCHECK probes the API port
     command: ["python", "-m", "app.worker"]
     environment:
       <<: *backend-env
       TALLY_WORKER_SHARDS: "0,1"
     stop_grace_period: 30s  # > long-poll wait, so SIGTERM drains in-flight work
     depends_on: &worker-deps
-      postgres: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
       aws-setup: { condition: service_completed_successfully }
 
   worker-b:
     <<: *backend
+    healthcheck: { disable: true }  # image HEALTHCHECK probes the API port
     command: ["python", "-m", "app.worker"]
     environment:
       <<: *backend-env
