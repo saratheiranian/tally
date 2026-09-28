@@ -182,9 +182,10 @@ locals {
     { title = "Oldest message age (s): stats freshness", metrics = [
       for q in local.queue_names : ["AWS/SQS", "ApproximateAgeOfOldestMessage", "QueueName", q, { stat = "Maximum" }]
     ] },
-    { title = "Events billed / redeliveries (worker EMF)", metrics = [
+    { title = "Events billed / retries (worker EMF)", metrics = [
       ["Tally", "EventsBilled", { stat = "Sum" }],
-      [".", "MessagesRedelivered", { stat = "Sum", yAxis = "right" }],
+      [".", "MessagesRetried", { stat = "Sum", yAxis = "right" }],
+      [".", "MessagesAlreadyApplied", { stat = "Sum", yAxis = "right" }],
       [".", "CommitFailures", { stat = "Sum", yAxis = "right" }],
     ] },
     { title = "Commit latency (ms)", metrics = [

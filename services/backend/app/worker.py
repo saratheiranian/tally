@@ -67,6 +67,7 @@ class Worker:
             MaxNumberOfMessages=10,
             WaitTimeSeconds=self.settings.worker_wait_seconds,
             VisibilityTimeout=self.settings.worker_visibility_timeout,
+            AttributeNames=["ApproximateReceiveCount"],
         )
         messages = resp.get("Messages", [])
         if not messages:
@@ -88,15 +89,25 @@ class Worker:
             Entries=[{"Id": str(i), "ReceiptHandle": r} for i, (r, _) in enumerate(written)],
         )
         billed = sum(len(b.owned) for _, b in written if b.batch_id in new_ids)
-        redelivered = len(written) - len(new_ids)
+        # Two different "it came back" signals:
+        #   retried         - SQS delivered it before (a worker died, a commit failed,
+        #                     or the visibility timeout expired mid-processing)
+        #   already_applied - a previous delivery had *committed*; the ledger made this a no-op
+        retried = sum(int(m.get("Attributes", {}).get("ApproximateReceiveCount", "1")) > 1 for m in messages)
+        already_applied = len(written) - len(new_ids)
         log.info(
-            "committed %d message(s) (%d redelivered), %d events billed", len(written), redelivered, billed
+            "committed %d message(s) (%d retried deliveries, %d already applied), %d events billed",
+            len(written),
+            retried,
+            already_applied,
+            billed,
         )
         metrics.emit(
             self._dims(queue_url),
             {
                 "MessagesCommitted": (len(written), "Count"),
-                "MessagesRedelivered": (redelivered, "Count"),
+                "MessagesRetried": (retried, "Count"),
+                "MessagesAlreadyApplied": (already_applied, "Count"),
                 "EventsBilled": (billed, "Count"),
                 "CommitLatency": (commit_ms, "Milliseconds"),
             },
