@@ -1,10 +1,11 @@
 import asyncio
 import math
 from contextlib import asynccontextmanager
+from datetime import date
 from typing import Annotated
 
 import asyncpg
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
 from redis.asyncio import Redis
 
 from . import aws
@@ -16,6 +17,8 @@ from .models import EventBatch, IngestResult
 from .queueing import EventTooLarge
 from .ratelimit import TokenBucketLimiter
 from .sink import PostgresSink, SinkUnavailable, SqsSink
+from .stats import Stats, approximate_stats, exact_stats_dynamo, exact_stats_postgres
+from .store import DynamoEventStore
 
 
 def create_app(settings: Settings = default_settings) -> FastAPI:
@@ -34,6 +37,9 @@ def create_app(settings: Settings = default_settings) -> FastAPI:
             urls = {n: sqs.get_queue_url(QueueName=n)["QueueUrl"] for n in settings.queue_names()}
             app.state.sqs = sqs
             app.state.sink = SqsSink(sqs, urls, ConsistentHashRing(urls))
+            app.state.store = DynamoEventStore(
+                aws.client("dynamodb", settings), settings.dynamodb_table, settings.write_shards
+            )
         else:
             app.state.sink = PostgresSink(pool)
         try:
@@ -96,6 +102,34 @@ def create_app(settings: Settings = default_settings) -> FastAPI:
             raise HTTPException(
                 status.HTTP_503_SERVICE_UNAVAILABLE, str(exc), headers={"Retry-After": "1"}
             ) from exc
+
+    @app.get("/v1/stats", response_model=Stats)
+    async def stats(
+        request: Request,
+        tenant: Annotated[Tenant, Depends(current_tenant)],
+        start: date,
+        end: date,
+        exact: bool = False,
+        limit: Annotated[int, Query(ge=1, le=20)] = 10,
+    ) -> Stats:
+        """Events, unique users, and top events/pages for [start, end] (UTC days, inclusive)."""
+        if end < start:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "end must be on or after start")
+        days = (end - start).days + 1
+        pipeline = settings.sink == "sqs"
+        # Sketch merges cost O(days); exact scans cost O(events), so they get a tighter cap.
+        max_days = 366 if pipeline and not exact else 31
+        if days > max_days:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"range is {days} days; max is {max_days} for this query",
+            )
+        pool = request.app.state.pool
+        if not pipeline:
+            return await exact_stats_postgres(pool, tenant.id, start, end, limit)
+        if exact:
+            return await exact_stats_dynamo(request.app.state.store, tenant.id, start, end, limit)
+        return await approximate_stats(pool, tenant.id, start, end, settings.sketch_config(), limit)
 
     @app.get("/healthz")
     async def healthz() -> dict:
