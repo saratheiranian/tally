@@ -22,3 +22,5 @@ I use AI coding tools (Claude, Copilot) for productivity, and treat their output
 3. Security-relevant code (auth, key handling) is reviewed line by line.
 4. Concurrency tests get **mutation-tested**: temporarily delete the lock or guard they protect and confirm they fail. A race test that passes without its lock proves nothing. (This caught a real case in Phase 3; see ADR 0004.)
 5. Benchmarks that disagree with theory get investigated with more trials before anyone trusts or "fixes" them.
+6. **Every check must be able to fail.** A verification that is hard-coded to pass, or that measures a proxy for the thing it claims, is worse than none. (Phase 5: a review of the chaos script caught a hard-coded "queues drained" check and a retry counter that measured the wrong thing; both now read real state.)
+7. **Reports claim only what the run showed.** Anything a run didn't exercise gets pointed at the test that does.
