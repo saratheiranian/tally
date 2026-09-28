@@ -1,11 +1,13 @@
 import asyncio
 import math
+import pathlib
 from contextlib import asynccontextmanager
 from datetime import date
 from typing import Annotated
 
 import asyncpg
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
+from fastapi.responses import FileResponse
 from redis.asyncio import Redis
 
 from . import aws
@@ -19,6 +21,8 @@ from .ratelimit import TokenBucketLimiter
 from .sink import PostgresSink, SinkUnavailable, SqsSink
 from .stats import Stats, approximate_stats, exact_stats_dynamo, exact_stats_postgres
 from .store import DynamoEventStore
+
+STATIC = pathlib.Path(__file__).parent / "static"
 
 
 def create_app(settings: Settings = default_settings) -> FastAPI:
@@ -131,6 +135,11 @@ def create_app(settings: Settings = default_settings) -> FastAPI:
         if exact:
             return await exact_stats_dynamo(request.app.state.store, tenant.id, start, end, limit)
         return await approximate_stats(pool, tenant.id, start, end, settings.sketch_config(), limit)
+
+    @app.get("/dashboard", include_in_schema=False)
+    async def dashboard() -> FileResponse:
+        """Static stats page; it calls /v1/stats with the key the user enters."""
+        return FileResponse(STATIC / "dashboard.html", media_type="text/html")
 
     @app.get("/healthz")
     async def healthz() -> dict:

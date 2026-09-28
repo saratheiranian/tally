@@ -101,3 +101,9 @@ def test_naive_timestamp_is_treated_as_utc(client, tenant):
 def test_health_endpoints(client):
     assert client.get("/healthz").json() == {"status": "ok"}
     assert client.get("/readyz").json() == {"postgres": "ok", "redis": "ok"}
+
+
+def test_dashboard_is_served(client):
+    r = client.get("/dashboard")
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/html")
+    assert "/v1/stats" in r.text

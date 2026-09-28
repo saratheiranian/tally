@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tally stats</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #EEF2F0;
+    --ink: #1D2B3A;
+    --ink-soft: #52606D;
+    --tally: #2F6F62;
+    --tally-track: #D5E2DD;
+    --estimate: #B0892B;
+    --estimate-band: rgba(176, 137, 43, 0.22);
+    --rule: #C9D3CF;
+    --field: #FFFFFF;
+    --danger: #9B2C2C;
+    --font: "Atkinson Hyperlegible", "Segoe UI", system-ui, -apple-system, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #16202A;
+      --ink: #E6ECE9;
+      --ink-soft: #9AA8B4;
+      --tally: #6FB3A2;
+      --tally-track: #23313D;
+      --estimate: #D9B35A;
+      --estimate-band: rgba(217, 179, 90, 0.22);
+      --rule: #2E3D4A;
+      --field: #1D2934;
+      --danger: #F08A8A;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--paper); color: var(--ink); }
+  body {
+    margin: 0;
+    font: 400 1rem/1.5 var(--font);
+    font-variant-numeric: tabular-nums;
+  }
+  main { max-width: 60rem; margin: 0 auto; padding: 2.5rem 1.5rem 4rem; }
+
+  header { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 2rem; }
+  header h1 { font-size: 1.75rem; line-height: 1; margin: 0; letter-spacing: -0.01em; }
+  .mark { width: 2.25rem; height: 1.75rem; color: var(--tally); flex: none; }
+
+  form.query {
+    display: grid;
+    grid-template-columns: minmax(14rem, 2fr) repeat(2, minmax(9rem, 1fr)) auto;
+    gap: 0.75rem 1rem;
+    align-items: end;
+    padding-bottom: 1.75rem;
+    border-bottom: 1px solid var(--rule);
+  }
+  label { display: grid; gap: 0.3rem; font-size: 0.875rem; color: var(--ink-soft); }
+  input {
+    font: inherit; color: var(--ink); background: var(--field);
+    border: 1px solid var(--rule); border-radius: 6px; padding: 0.55rem 0.7rem; min-width: 0;
+  }
+  button {
+    font: 700 1rem var(--font); color: var(--paper); background: var(--tally);
+    border: 0; border-radius: 6px; padding: 0.6rem 1.1rem; cursor: pointer;
+  }
+  button.secondary { color: var(--tally); background: transparent; border: 1px solid var(--tally); }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+  :is(input, button):focus-visible { outline: 3px solid var(--estimate); outline-offset: 2px; }
+
+  .message { margin: 1.5rem 0 0; color: var(--ink-soft); }
+  .message.error { color: var(--danger); }
+
+  /* The one bold element: an estimate you can see being verified. */
+  .users { padding: 2.25rem 0 2rem; border-bottom: 1px solid var(--rule); }
+  .users h2 { font-size: 1rem; font-weight: 400; color: var(--ink-soft); margin: 0; }
+  .users .figure { font-size: clamp(3rem, 9vw, 5.5rem); font-weight: 700; line-height: 1.05; margin: 0.15rem 0 0.35rem; letter-spacing: -0.02em; }
+  .users .how { margin: 0 0 1.5rem; max-width: 38rem; color: var(--ink-soft); }
+  .scale { position: relative; height: 3.25rem; margin: 0 0 0.5rem; }
+  .scale .axis { position: absolute; left: 0; right: 0; top: 1.4rem; height: 2px; background: var(--rule); }
+  .scale .band { position: absolute; top: 0.9rem; height: 1.05rem; background: var(--estimate-band); border-radius: 3px; }
+  .scale .pin { position: absolute; top: 0.55rem; width: 3px; height: 1.75rem; transform: translateX(-1.5px); border-radius: 2px; }
+  .scale .pin.estimate { background: var(--estimate); }
+  .scale .pin.exact { background: var(--tally); height: 2.3rem; top: 0.3rem; }
+  .scale .tick { position: absolute; top: 2.15rem; font-size: 0.8rem; color: var(--ink-soft); transform: translateX(-50%); white-space: nowrap; }
+  .legend { display: flex; flex-wrap: wrap; gap: 0.5rem 1.5rem; font-size: 0.875rem; color: var(--ink-soft); margin-bottom: 1.25rem; }
+  .legend span::before { content: ""; display: inline-block; width: 0.75rem; height: 0.75rem; margin-right: 0.4rem; vertical-align: -0.05rem; border-radius: 2px; }
+  .legend .l-est::before { background: var(--estimate); }
+  .legend .l-band::before { background: var(--estimate-band); }
+  .legend .l-exact::before { background: var(--tally); }
+  .verdict { margin: 1rem 0 0; font-size: 1.05rem; }
+  @media (prefers-reduced-motion: no-preference) {
+    .scale .pin.exact { animation: drop 420ms cubic-bezier(.2, .8, .2, 1); }
+    @keyframes drop { from { transform: translate(-1.5px, -1.2rem); opacity: 0; } to { transform: translateX(-1.5px); opacity: 1; } }
+  }
+
+  .totals { padding: 1.25rem 0; border-bottom: 1px solid var(--rule); color: var(--ink-soft); }
+  .totals strong { color: var(--ink); font-size: 1.25rem; }
+
+  .lists { display: grid; grid-template-columns: 1fr 1fr; gap: 2.5rem; padding-top: 2rem; }
+  .lists h2 { font-size: 1.15rem; margin: 0 0 1rem; }
+  ol.bars { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.7rem; }
+  ol.bars li { display: grid; grid-template-columns: 1fr auto; gap: 0.1rem 1rem; }
+  ol.bars .key { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  ol.bars .count { color: var(--ink-soft); }
+  ol.bars .track { grid-column: 1 / -1; height: 0.5rem; background: var(--tally-track); border-radius: 3px; overflow: hidden; }
+  ol.bars .fill { height: 100%; background: var(--tally); border-radius: 3px; }
+  .note { font-size: 0.875rem; color: var(--ink-soft); margin-top: 1rem; }
+
+  [hidden] { display: none !important; }
+  @media (max-width: 44rem) {
+    form.query { grid-template-columns: 1fr 1fr; }
+    form.query .key-field, form.query button { grid-column: 1 / -1; }
+    .lists { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <svg class="mark" viewBox="0 0 36 28" aria-hidden="true">
+      <g stroke="currentColor" stroke-width="3" stroke-linecap="round">
+        <line x1="6" y1="3" x2="6" y2="25"/><line x1="13" y1="3" x2="13" y2="25"/>
+        <line x1="20" y1="3" x2="20" y2="25"/><line x1="27" y1="3" x2="27" y2="25"/>
+        <line x1="2" y1="21" x2="33" y2="7"/>
+      </g>
+    </svg>
+    <h1>Tally</h1>
+  </header>
+
+  <form class="query" id="query">
+    <label class="key-field">API key
+      <input id="key" type="password" autocomplete="off" placeholder="tk_live_…" required>
+    </label>
+    <label>From <input id="start" type="date" required></label>
+    <label>To <input id="end" type="date" required></label>
+    <button type="submit" id="show">Show stats</button>
+  </form>
+
+  <p class="message" id="message">Enter an API key and a date range to see your stats.</p>
+
+  <section id="results" hidden>
+    <div class="users">
+      <h2>Unique users</h2>
+      <p class="figure" id="users-figure"></p>
+      <p class="how" id="users-how"></p>
+      <div id="scale-wrap">
+        <div class="scale" id="scale" role="img"></div>
+        <div class="legend">
+          <span class="l-est">Estimate</span><span class="l-band">95% range</span><span class="l-exact" id="legend-exact" hidden>Exact count</span>
+        </div>
+        <button type="button" class="secondary" id="verify">Check against exact count</button>
+        <p class="verdict" id="verdict" hidden></p>
+      </div>
+    </div>
+
+    <p class="totals"><strong id="events-total"></strong> events in this range</p>
+
+    <div class="lists">
+      <div><h2>Top pages</h2><ol class="bars" id="pages"></ol></div>
+      <div><h2>Top events</h2><ol class="bars" id="events"></ol></div>
+    </div>
+    <p class="note" id="counts-note"></p>
+  </section>
+</main>
+
+<script>
+  // Standard error of the server's default HyperLogLog (p=14): 1.04 / sqrt(2^14).
+  const HLL_SIGMA = 1.04 / Math.sqrt(2 ** 14);
+  const EXACT_MAX_DAYS = 31;
+  const $ = (id) => document.getElementById(id);
+  const fmt = new Intl.NumberFormat();
+  let last = null;
+
+  const today = new Date().toISOString().slice(0, 10);
+  $("start").value = $("start").value || today;
+  $("end").value = $("end").value || today;
+  try { $("key").value = sessionStorage.getItem("tally-key") || ""; } catch { /* storage unavailable */ }
+
+  function days(a, b) { return Math.round((new Date(b) - new Date(a)) / 86400000) + 1; }
+
+  async function fetchStats(exact) {
+    const q = new URLSearchParams({ start: $("start").value, end: $("end").value, limit: 8 });
+    if (exact) q.set("exact", "true");
+    const res = await fetch(`/v1/stats?${q}`, { headers: { Authorization: `Bearer ${$("key").value.trim()}` } });
+    if (res.status === 401) throw new Error("That API key wasn't accepted. Check it and try again.");
+    if (res.status === 422) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(typeof body.detail === "string" ? body.detail : "Check the dates: the end must be on or after the start.");
+    }
+    if (!res.ok) throw new Error(`The server returned ${res.status}. Try again in a moment.`);
+    return res.json();
+  }
+
+  function say(text, isError = false) {
+    $("message").textContent = text;
+    $("message").classList.toggle("error", isError);
+    $("message").hidden = !text;
+  }
+
+  function bars(el, rows) {
+    el.replaceChildren();
+    const max = Math.max(1, ...rows.map((r) => r.count));
+    for (const r of rows) {
+      const li = document.createElement("li");
+      li.innerHTML = `<span class="key"></span><span class="count"></span><span class="track"><span class="fill"></span></span>`;
+      li.querySelector(".key").textContent = r.key;
+      li.querySelector(".key").title = r.key;
+      li.querySelector(".count").textContent = fmt.format(r.count);
+      li.querySelector(".fill").style.width = `${(100 * r.count) / max}%`;
+      el.append(li);
+    }
+    if (!rows.length) el.innerHTML = `<li class="count">Nothing yet.</li>`;
+  }
+
+  function drawScale(estimate, exact) {
+    const scale = $("scale");
+    scale.replaceChildren();
+    const spread = Math.max(estimate * HLL_SIGMA * 4, 2);
+    let lo = estimate - spread, hi = estimate + spread;
+    if (exact !== undefined) { lo = Math.min(lo, exact - spread * 0.25); hi = Math.max(hi, exact + spread * 0.25); }
+    const pos = (v) => `${(100 * (v - lo)) / (hi - lo)}%`;
+    const add = (cls, style, text) => {
+      const d = document.createElement("div");
+      d.className = cls;
+      Object.assign(d.style, style);
+      if (text) d.textContent = text;
+      scale.append(d);
+    };
+    const b = estimate * HLL_SIGMA * 2; // 95% ≈ ±2σ
+    add("axis", {});
+    add("band", { left: pos(estimate - b), width: `calc(${pos(estimate + b)} - ${pos(estimate - b)})` });
+    add("pin estimate", { left: pos(estimate) });
+    add("tick", { left: pos(estimate - b) }, fmt.format(Math.round(estimate - b)));
+    add("tick", { left: pos(estimate + b) }, fmt.format(Math.round(estimate + b)));
+    if (exact !== undefined) add("pin exact", { left: pos(exact) });
+    scale.setAttribute("aria-label", exact === undefined
+      ? `Estimate ${fmt.format(estimate)} unique users, 95% range ${fmt.format(Math.round(estimate - b))} to ${fmt.format(Math.round(estimate + b))}.`
+      : `Estimate ${fmt.format(estimate)}, exact ${fmt.format(exact)}.`);
+  }
+
+  function render(stats) {
+    last = stats;
+    $("results").hidden = false;
+    $("users-figure").textContent = fmt.format(stats.unique_users);
+    $("events-total").textContent = fmt.format(stats.events);
+    bars($("pages"), stats.top_pages);
+    bars($("events"), stats.top_events);
+    $("verdict").hidden = true;
+    $("legend-exact").hidden = true;
+
+    if (stats.approximate) {
+      $("scale-wrap").hidden = false;
+      $("users-how").textContent =
+        `Estimated from daily HyperLogLog sketches, typically within ±${(HLL_SIGMA * 100).toFixed(1)}%. ` +
+        `Merging the days gives a true union, so a user seen on several days counts once.`;
+      $("counts-note").textContent = "Counts come from Count-Min sketches: they may run slightly high, never low.";
+      drawScale(stats.unique_users);
+      const tooLong = days(stats.start, stats.end) > EXACT_MAX_DAYS;
+      $("verify").disabled = tooLong;
+      $("verify").title = tooLong ? `Exact counts are limited to ${EXACT_MAX_DAYS} days.` : "";
+    } else {
+      $("scale-wrap").hidden = true;
+      $("users-how").textContent = "Exact count from the events table.";
+      $("counts-note").textContent = "";
+    }
+    say(stats.events === 0 ? "No events in this range yet. Send some, then show stats again." : "");
+  }
+
+  $("query").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    try { sessionStorage.setItem("tally-key", $("key").value.trim()); } catch { /* ignore */ }
+    $("show").disabled = true;
+    say("Loading…");
+    try { render(await fetchStats(false)); }
+    catch (err) { $("results").hidden = true; say(err.message, true); }
+    finally { $("show").disabled = false; }
+  });
+
+  $("verify").addEventListener("click", async () => {
+    if (!last) return;
+    $("verify").disabled = true;
+    $("verify").textContent = "Counting every event…";
+    try {
+      const exact = await fetchStats(true);
+      drawScale(last.unique_users, exact.unique_users);
+      $("legend-exact").hidden = false;
+      const diff = last.unique_users - exact.unique_users;
+      const pct = exact.unique_users ? Math.abs(diff) / exact.unique_users : 0;
+      const samePages = JSON.stringify(last.top_pages.map((r) => r.key)) === JSON.stringify(exact.top_pages.map((r) => r.key));
+      $("verdict").textContent = diff === 0
+        ? `Exact count: ${fmt.format(exact.unique_users)}. The estimate was spot on.`
+        : `Exact count: ${fmt.format(exact.unique_users)}. The estimate was ${(pct * 100).toFixed(2)}% ${diff > 0 ? "high" : "low"}` +
+          `${pct <= 2 * HLL_SIGMA ? ", inside its 95% range." : ", outside its 95% range."}` +
+          ` Top pages ${samePages ? "match the exact ranking" : "differ from the exact ranking"}.`;
+      $("verdict").hidden = false;
+    } catch (err) {
+      $("verdict").textContent = err.message;
+      $("verdict").hidden = false;
+    } finally {
+      $("verify").textContent = "Check against exact count";
+      $("verify").disabled = false;
+    }
+  });
+</script>
+</body>
+</html>
