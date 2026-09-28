@@ -37,6 +37,7 @@ def create_app(settings: Settings = default_settings) -> FastAPI:
             urls = {n: sqs.get_queue_url(QueueName=n)["QueueUrl"] for n in settings.queue_names()}
             app.state.sqs = sqs
             app.state.sink = SqsSink(sqs, urls, ConsistentHashRing(urls))
+            app.state.readiness_queue_url = next(iter(urls.values()))
             app.state.store = DynamoEventStore(
                 aws.client("dynamodb", settings), settings.dynamodb_table, settings.write_shards
             )
@@ -152,7 +153,12 @@ def create_app(settings: Settings = default_settings) -> FastAPI:
             checks["redis"] = f"error: {exc.__class__.__name__}"
         if settings.sink == "sqs":
             try:
-                await asyncio.to_thread(request.app.state.sqs.list_queues, MaxResults=1)
+                # Scoped to our own queue, so the task role needs no account-wide sqs:ListQueues.
+                await asyncio.to_thread(
+                    request.app.state.sqs.get_queue_attributes,
+                    QueueUrl=request.app.state.readiness_queue_url,
+                    AttributeNames=["QueueArn"],
+                )
                 checks["sqs"] = "ok"
             except Exception as exc:  # noqa: BLE001
                 checks["sqs"] = f"error: {exc.__class__.__name__}"

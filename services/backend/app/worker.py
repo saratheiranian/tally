@@ -17,11 +17,12 @@ two steps is safe: the retry converges on the same final state.
 import asyncio
 import logging
 import signal
+import time
 from datetime import UTC
 
 import asyncpg
 
-from . import aws
+from . import aws, metrics
 from .aggregates import ProcessedBatch, commit_batches
 from .config import Settings
 from .config import settings as default_settings
@@ -73,23 +74,38 @@ class Worker:
         written = [w for w in await asyncio.gather(*(self._write_one(m) for m in messages)) if w]
         if not written:
             return 0
+        t0 = time.perf_counter()
         try:
             new_ids = await commit_batches(self.pool, [b for _, b in written], self.sketch_cfg)
         except Exception:
             log.exception("commit failed; %d message(s) will be redelivered", len(written))
+            metrics.emit(self._dims(queue_url), {"CommitFailures": (1, "Count")})
             return 0
+        commit_ms = (time.perf_counter() - t0) * 1000
         await asyncio.to_thread(
             self.sqs.delete_message_batch,
             QueueUrl=queue_url,
             Entries=[{"Id": str(i), "ReceiptHandle": r} for i, (r, _) in enumerate(written)],
         )
+        billed = sum(len(b.owned) for _, b in written if b.batch_id in new_ids)
+        redelivered = len(written) - len(new_ids)
         log.info(
-            "committed %d message(s) (%d redelivered), %d events billed",
-            len(written),
-            len(written) - len(new_ids),
-            sum(len(b.owned) for _, b in written if b.batch_id in new_ids),
+            "committed %d message(s) (%d redelivered), %d events billed", len(written), redelivered, billed
+        )
+        metrics.emit(
+            self._dims(queue_url),
+            {
+                "MessagesCommitted": (len(written), "Count"),
+                "MessagesRedelivered": (redelivered, "Count"),
+                "EventsBilled": (billed, "Count"),
+                "CommitLatency": (commit_ms, "Milliseconds"),
+            },
         )
         return len(written)
+
+    @staticmethod
+    def _dims(queue_url: str) -> dict[str, str]:
+        return {"Queue": queue_url.rsplit("/", 1)[-1]}
 
     async def run(self, queue_urls: list[str], stop: asyncio.Event) -> None:
         async def loop(url: str) -> None:
