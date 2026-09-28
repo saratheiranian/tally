@@ -1,0 +1,32 @@
+name: Release tally-sketches
+
+# Tag `sketches-v0.1.0` to publish. Uses PyPI Trusted Publishing (OIDC), so no
+# API token is stored in the repo. Configure it once at
+# https://pypi.org/manage/account/publishing/ for this repo + workflow file.
+on:
+  push:
+    tags: ["sketches-v*"]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    defaults:
+      run:
+        working-directory: packages/sketches
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Tag must match package version
+        run: |
+          TAG="${GITHUB_REF_NAME#sketches-v}"
+          VERSION=$(python -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          test "$TAG" = "$VERSION" || { echo "tag $TAG != version $VERSION"; exit 1; }
+      - run: pip install build && python -m build
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: packages/sketches/dist/

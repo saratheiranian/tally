@@ -1,0 +1,45 @@
+name: tally-sketches
+
+on:
+  push:
+    branches: [main]
+    paths: ["packages/sketches/**", ".github/workflows/sketches.yml"]
+  pull_request:
+    paths: ["packages/sketches/**", ".github/workflows/sketches.yml"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    defaults:
+      run:
+        working-directory: packages/sketches
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e ".[dev]"
+      - run: ruff check . && ruff format --check .
+      - run: pytest -q
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/sketches
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install build twine
+      - run: python -m build && twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: packages/sketches/dist/
