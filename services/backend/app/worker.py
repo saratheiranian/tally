@@ -1,12 +1,16 @@
 """Queue worker:  python -m app.worker
 
-For each message: write events to DynamoDB, then record usage in Postgres, then
-delete the message. If anything fails the message is *not* deleted; SQS makes it
-visible again after the visibility timeout and another attempt runs. After
-max_receive_count failures, SQS's redrive policy moves it to the dead-letter
-queue, so a poison message can't block a shard forever.
+Each poll receives up to 10 messages and:
+  1. writes every message's events to DynamoDB in parallel (conditional puts);
+  2. commits billing, usage, and sketch updates for all of them in ONE Postgres
+     transaction (aggregates.commit_batches);
+  3. deletes the messages from SQS.
+If a message fails step 1, it's left out of the commit and not deleted. If the
+commit fails, nothing is deleted. SQS redelivers after the visibility timeout,
+and after max_receive_count failures the redrive policy moves the message to the
+dead-letter queue, so a poison message can't block a shard forever.
 
-Every step is idempotent (see store.py and usage.py), so a crash between any
+Every step is idempotent (see store.py and aggregates.py), so a crash between any
 two steps is safe: the retry converges on the same final state.
 """
 
@@ -18,11 +22,11 @@ from datetime import UTC
 import asyncpg
 
 from . import aws
+from .aggregates import ProcessedBatch, commit_batches
 from .config import Settings
 from .config import settings as default_settings
 from .models import QueueMessage
 from .store import DynamoEventStore
-from .usage import record_usage
 
 log = logging.getLogger("tally.worker")
 
@@ -33,26 +37,23 @@ class Worker:
         self.sqs = sqs
         self.store = store
         self.pool = pool
+        self.sketch_cfg = settings.sketch_config()
 
-    async def process(self, body: str) -> int:
-        """Handle one message body. Returns events owned (billed) by this batch."""
+    async def write(self, body: str) -> ProcessedBatch:
+        """Step 1 for one message: store its events and report which it owns."""
         msg = QueueMessage.model_validate_json(body)
         owned = await self.store.put_batch(msg)
-        day = msg.received_at.astimezone(UTC).date()
-        await record_usage(self.pool, msg.batch_id, msg.tenant_id, day, owned)
-        log.info(
-            "batch=%s tenant=%s events=%d billed=%d",
-            msg.batch_id,
-            msg.tenant_id,
-            len(msg.events),
-            owned,
-        )
-        return owned
+        return ProcessedBatch(msg.batch_id, msg.tenant_id, msg.received_at.astimezone(UTC).date(), owned)
 
-    async def _handle(self, m: dict) -> str | None:
+    async def process(self, body: str) -> int:
+        """Handle a single message end to end. Returns the events billed."""
+        batch = await self.write(body)
+        await commit_batches(self.pool, [batch], self.sketch_cfg)
+        return len(batch.owned)
+
+    async def _write_one(self, m: dict) -> tuple[str, ProcessedBatch] | None:
         try:
-            await self.process(m["Body"])
-            return m["ReceiptHandle"]
+            return m["ReceiptHandle"], await self.write(m["Body"])
         except Exception:
             # Leave it on the queue; it will be retried and eventually dead-lettered.
             log.exception("failed message_id=%s (will retry)", m.get("MessageId"))
@@ -69,15 +70,26 @@ class Worker:
         messages = resp.get("Messages", [])
         if not messages:
             return 0
-        receipts = await asyncio.gather(*(self._handle(m) for m in messages))
-        done = [r for r in receipts if r]
-        if done:
-            await asyncio.to_thread(
-                self.sqs.delete_message_batch,
-                QueueUrl=queue_url,
-                Entries=[{"Id": str(i), "ReceiptHandle": r} for i, r in enumerate(done)],
-            )
-        return len(done)
+        written = [w for w in await asyncio.gather(*(self._write_one(m) for m in messages)) if w]
+        if not written:
+            return 0
+        try:
+            new_ids = await commit_batches(self.pool, [b for _, b in written], self.sketch_cfg)
+        except Exception:
+            log.exception("commit failed; %d message(s) will be redelivered", len(written))
+            return 0
+        await asyncio.to_thread(
+            self.sqs.delete_message_batch,
+            QueueUrl=queue_url,
+            Entries=[{"Id": str(i), "ReceiptHandle": r} for i, (r, _) in enumerate(written)],
+        )
+        log.info(
+            "committed %d message(s) (%d redelivered), %d events billed",
+            len(written),
+            len(written) - len(new_ids),
+            sum(len(b.owned) for _, b in written if b.batch_id in new_ids),
+        )
+        return len(written)
 
     async def run(self, queue_urls: list[str], stop: asyncio.Event) -> None:
         async def loop(url: str) -> None:

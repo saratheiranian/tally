@@ -83,8 +83,8 @@ class DynamoEventStore:
                 return False
             raise
 
-    async def put_batch(self, msg: QueueMessage) -> int:
-        """Write every event in the message; return how many this batch owns."""
+    async def put_batch(self, msg: QueueMessage) -> list[Event]:
+        """Write every event in the message; return the events this batch owns."""
 
         async def one(e: Event) -> bool:
             async with self._sem:
@@ -93,7 +93,7 @@ class DynamoEventStore:
         # Dedupe within the message first so two copies can't both "own" an event.
         unique = list({e.event_id: e for e in msg.events}.values())
         results = await asyncio.gather(*(one(e) for e in unique))
-        return sum(results)
+        return [e for e, owned in zip(unique, results, strict=True) if owned]
 
     def _query_shard(self, pk: str) -> list[dict]:
         items, kwargs = [], {}

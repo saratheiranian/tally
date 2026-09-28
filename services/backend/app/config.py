@@ -40,6 +40,16 @@ class Settings(BaseSettings):
     worker_visibility_timeout: int = 60
     worker_concurrency: int = 32  # parallel DynamoDB writes per worker
 
+    # --- Sketches (Phase 3) ------------------------------------------------------
+    sketch_hll_precision: int = 14  # 16 KiB per tenant-day, ~0.8% error on unique users
+    sketch_topk_k: int = 20
+    sketch_topk_epsilon: float = 0.001
+
+    def sketch_config(self):
+        from .aggregates import SketchConfig
+
+        return SketchConfig(self.sketch_hll_precision, self.sketch_topk_k, self.sketch_topk_epsilon)
+
     def queue_names(self) -> list[str]:
         return [f"{self.queue_prefix}-{i}" for i in range(self.queue_shards)]
 
